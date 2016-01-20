@@ -1,0 +1,37 @@
+menu.RomConfig=ROM Config
+menu.FlashSize=Flash Size
+##############################################################
+oak_fallback.name=Oak Fallback
+
+oak_fallback.upload.tool=esptool
+oak_fallback.upload.verbose=-vv
+oak_fallback.upload.speed=115200
+oak_fallback.upload.resetmethod=ck
+oak_fallback.upload.maximum_size=434160
+oak_fallback.upload.maximum_data_size=81920
+oak_fallback.upload.wait_for_upload_port=true
+oak_fallback.serial.disableDTR=true
+oak_fallback.serial.disableRTS=true
+
+oak_fallback.build.mcu=esp8266
+oak_fallback.build.f_cpu=80000000L
+oak_fallback.build.board=ESP8266_ESP01
+oak_fallback.build.core=esp8266
+oak_fallback.build.variant=generic
+oak_fallback.build.flash_mode=qio
+oak_fallback.build.flash_freq=40
+oak_fallback.build.spiffs_pagesize=256
+
+
+oak_fallback.menu.FlashSize.OAK=OAK (4M/1M SPIFFS)
+oak_fallback.menu.FlashSize.OAK.build.flash_size=32m
+oak_fallback.menu.FlashSize.OAK.build.spiffs_start=0x300000
+oak_fallback.menu.FlashSize.OAK.build.spiffs_end=0x3FB000
+oak_fallback.menu.FlashSize.OAK.build.spiffs_blocksize=8192
+oak_fallback.menu.FlashSize.OAK.build.spiffs_pagesize=256
+
+oak_fallback.menu.RomConfig.Half2=Second Half - 512KB (Half)
+oak_fallback.menu.RomConfig.Half2.build.flash_ld=oak_half2.ld
+oak_fallback.menu.RomConfig.Half2.upload.maximum_size=520176
+oak_fallback.menu.RomConfig.Half2.upload.flash_address=0x0081000
+

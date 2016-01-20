@@ -13,12 +13,13 @@ extern "C" {
 
 #include <Ticker.h>
 #include "ESP8266WiFi.h"
-
+#include "WiFiClientSecure.h"
 //#define DEBUG_SETUP
 
 
-
-
+const char * update_domain = "oakota.digistump.com";
+const char * update_url = "/firmware/latest.bin";
+const char * update_fingerprint = "98 66 d5 5c 3d 4a 49 24 e3 1b 72 8b 8f 2e 65 2e 32 2a 7b 95";
 
 #ifndef MAX_ROM_SIZE //this becomes variable in the new scheme
   #define MAX_ROM_SIZE (0x100000-0x2000)
@@ -68,9 +69,9 @@ typedef struct {
 } oak_config; 
 
 char device_id[25];
-char first_update_domain[65];
-char first_update_url[65];
-char first_update_fingerprint[60];
+//char first_update_domain[65];
+//char first_update_url[65];
+//char first_update_fingerprint[60];
   char ssid[33]; //ssid and terminator
   char passcode[65]; //passcode and terminator
   uint8 channel; 
@@ -97,9 +98,9 @@ bool getDeviceInfo(){
 
 
   memcpy(device_id,deviceConfig->device_id,25);
-  memcpy(first_update_domain,deviceConfig->first_update_domain,65);
-  memcpy(first_update_url,deviceConfig->first_update_url,65);
-  memcpy(first_update_fingerprint,deviceConfig->first_update_fingerprint,60);
+  //memcpy(first_update_domain,deviceConfig->first_update_domain,65);
+  //memcpy(first_update_url,deviceConfig->first_update_url,65);
+  //memcpy(first_update_fingerprint,deviceConfig->first_update_fingerprint,60);
   memcpy(ssid,deviceConfig->ssid,33);
   memcpy(passcode,deviceConfig->passcode,65);
   channel = deviceConfig->channel;
@@ -107,7 +108,7 @@ bool getDeviceInfo(){
 }
 
 uint8 boot_buffer[BOOT_CONFIG_SIZE];
-rboot_config *bootConfig = (rboot_config*)boot_buffer;
+oakboot_config *bootConfig = (oakboot_config*)boot_buffer;
 
  
 
@@ -143,6 +144,7 @@ void setup(){
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
 Serial.begin(115200);
+//pin 5 because we are building this with vanilla ESP8266 2.0.0
 pinMode(5,OUTPUT);
   LEDFlip.attach(0.5, FlipLED);
   #ifdef DEBUG_SETUP
@@ -151,22 +153,15 @@ pinMode(5,OUTPUT);
     #endif
   readBootConfig();
 
-  //set these before we start so we'll jump back to config on failure
-  bootConfig->current_rom = 0;
-  bootConfig->config_rom = 0; 
-  bootConfig->update_rom = 0;
-  bootConfig->program_rom = 0;
-
+  //set this before we start so we'll jump back to config on failure
+  bootConfig->current_rom = bootConfig->config_rom;
   writeBootConfig();
 
   if(!getDeviceInfo()){
-    //switch to rom 0
+    //switch to config rom
     ESP.restart();
   }  
 
-  if(first_update_domain[0] == '\0' || first_update_url[0] == '\0' || first_update_fingerprint[0] == '\0'){
-    ESP.restart();
-  }
 
   #ifdef DEBUG_SETUP
       Serial.println("WIFI");
@@ -199,6 +194,7 @@ pinMode(5,OUTPUT);
     yield();
     //timeout after 15 seconds and return to main config loop - config on app will fail
     if(millis() > timeoutTime){
+        //reboot to config rom as wifi info failed
         ESP.restart();
       }
       delay(100);
@@ -241,18 +237,17 @@ void doFactoryUpdate(){
     #endif
 
   LEDFlip.attach(0.1, FlipLED);
-  if(doOTAUpdate(first_update_domain,443,first_update_url,first_update_fingerprint,8)){
+  uint8_t flashSlot = getOTAFlashSlot();
+  if(doOTAUpdate(update_domain,443,update_url,update_fingerprint,flashSlot)){
 
     #ifdef DEBUG_SETUP
       Serial.println("UPDATE OK - BOOT TO ROM");
     #endif
     
 
-    bootConfig->current_rom = 8;
-    bootConfig->config_rom = 0; //IMPORTANT TODO ON FINAL we're going to set this as factory - so that we come back here if the other one fails, but the first thing the other should do is set itself to factory and set user_rom to 1
-    bootConfig->update_rom = 0; //IMPORTANT TODO ON FINAL we're going to set this as factory - so that we come back here if the other one fails, but the first thing the other should do is set itself to factory and set user_rom to 1
-    bootConfig->program_rom = 8;
-      //firmware_version = 1; do this on first boot of new firmware
+    bootConfig->current_rom = bootConfig->program_rom;
+    bootConfig->config_rom = flashSlot; 
+    bootConfig->update_rom = flashSlot+2; 
     writeBootConfig();
       
   }
@@ -548,3 +543,11 @@ void writeBootConfig(){
     
   }
 
+uint8_t getOTAFlashSlot(){
+    if(bootConfig->program_rom != 0 && bootConfig->config_rom != 0)
+      return 0;
+    else if(bootConfig->program_rom != 4 && bootConfig->config_rom != 4)
+      return 4;
+    else
+      return 8;
+}
