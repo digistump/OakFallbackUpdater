@@ -230,6 +230,174 @@ static uint8 calc_chksum(uint8 *start, uint8 *end) {
   return chksum;
 }
 
+
+#define NOINLINE __attribute__ ((noinline))
+
+#define ROM_MAGIC    0xe9
+#define ROM_MAGIC_NEW1 0xea
+#define ROM_MAGIC_NEW2 0x04
+
+
+// buffer size, must be at least 0x10 (size of rom_header_new structure)
+#define BUFFER_SIZE 0x100
+
+// functions we'll call by address
+typedef void stage2a(uint32);
+typedef void usercode(void);
+
+// standard rom header
+typedef struct {
+  // general rom header
+  uint8 magic;
+  uint8 count;
+  uint8 flags1;
+  uint8 flags2;
+  usercode* entry;
+} rom_header;
+
+typedef struct {
+  uint8* address;
+  uint32 length;
+} section_header;
+
+// new rom header (irom section first) there is
+// another 8 byte header straight afterward the
+// standard header
+typedef struct {
+  // general rom header
+  uint8 magic;
+  uint8 count; // second magic for new header
+  uint8 flags1;
+  uint8 flags2;
+  uint32 entry;
+  // new type rom, lib header
+  uint32 add; // zero
+  uint32 len; // length of irom section
+} rom_header_new;
+
+bool check_image(uint8_t rom_number) {
+
+  uint32 readpos = bootConfig->roms[rom_number];
+  
+  uint8 buffer[BUFFER_SIZE];
+  uint8 sectcount;
+  uint8 sectcurrent;
+  uint8 *writepos;
+  uint8 chksum = CHKSUM_INIT;
+  uint32 loop;
+  uint32 remaining;
+  uint32 romaddr;
+  
+  rom_header_new *header = (rom_header_new*)buffer;
+  section_header *section = (section_header*)buffer;
+  
+  if (readpos == 0 || readpos == 0xffffffff) {
+    //ets_printf("EMPTY");
+    return 0;
+  }
+  
+  // read rom header
+  //if (SPIRead(readpos, header, sizeof(rom_header_new)) != 0) {
+  if (spi_flash_read(readpos, reinterpret_cast<uint32_t*>(header), sizeof(rom_header_new)) != SPI_FLASH_RESULT_OK) {
+    //ets_printf("NO_HEADER");
+    return 0;
+  }
+  
+  // check header type
+  if (header->magic == ROM_MAGIC) {
+    // old type, no extra header or irom section to skip over
+    romaddr = readpos;
+    readpos += sizeof(rom_header);
+    sectcount = header->count;
+  } else if (header->magic == ROM_MAGIC_NEW1 && header->count == ROM_MAGIC_NEW2) {
+    // new type, has extra header and irom section first
+    romaddr = readpos + header->len + sizeof(rom_header_new);
+
+    // we will set the real section count later, when we read the header
+    sectcount = 0xff;
+    // just skip the first part of the header
+    // rest is processed for the chksum
+    readpos += sizeof(rom_header);
+/*
+    // skip the extra header and irom section
+    readpos = romaddr;
+    // read the normal header that follows
+    if (SPIRead(readpos, header, sizeof(rom_header)) != 0) {
+      //ets_printf("NNH");
+      return 0;
+    }
+    sectcount = header->count;
+    readpos += sizeof(rom_header);
+*/
+  } else {
+    //ets_printf("BH");
+    return 0;
+  }
+  
+  // test each section
+  for (sectcurrent = 0; sectcurrent < sectcount; sectcurrent++) {
+    //ets_printf("ST");
+    
+    // read section header
+    if (spi_flash_read(readpos, reinterpret_cast<uint32_t*>(section), sizeof(section_header)) != SPI_FLASH_RESULT_OK) {
+      return 0;
+    }
+    readpos += sizeof(section_header);
+
+    // get section address and length
+    writepos = section->address;
+    remaining = section->length;
+    
+    while (remaining > 0) {
+      // work out how much to read, up to BUFFER_SIZE
+      uint32 readlen = (remaining < BUFFER_SIZE) ? remaining : BUFFER_SIZE;
+      // read the block
+      if (spi_flash_read(readpos, reinterpret_cast<uint32_t*>(buffer), readlen) != SPI_FLASH_RESULT_OK) {
+        return 0;
+      }
+      // increment next read and write positions
+      readpos += readlen;
+      writepos += readlen;
+      // decrement remaining count
+      remaining -= readlen;
+      // add to chksum
+      for (loop = 0; loop < readlen; loop++) {
+        chksum ^= buffer[loop];
+      }
+    }
+    
+//#ifdef BOOT_IROM_CHKSUM
+    if (sectcount == 0xff) {
+      // just processed the irom section, now
+      // read the normal header that follows
+      if (spi_flash_read(readpos, reinterpret_cast<uint32_t*>(header), sizeof(rom_header)) != SPI_FLASH_RESULT_OK) {
+        //ets_printf("SPI");
+        return 0;
+      }
+      sectcount = header->count + 1;
+      readpos += sizeof(rom_header);
+    }
+//#endif
+  }
+  
+  // round up to next 16 and get checksum
+  readpos = readpos | 0x0f;
+
+  if (spi_flash_read(readpos, reinterpret_cast<uint32_t*>(buffer), 1) != SPI_FLASH_RESULT_OK) {
+    //ets_printf("CK");
+    return 0;
+
+  }
+  
+  // compare calculated and stored checksums
+  if (buffer[0] != chksum) {
+    //ets_printf("CKF");
+    return 0;
+  }
+  
+  return 1;
+}
+
 void doFactoryUpdate(){
 
       #ifdef DEBUG_SETUP
@@ -240,15 +408,29 @@ void doFactoryUpdate(){
   uint8_t flashSlot = getOTAFlashSlot();
   if(doOTAUpdate(update_domain,443,update_url,update_fingerprint,flashSlot)){
 
-    #ifdef DEBUG_SETUP
-      Serial.println("UPDATE OK - BOOT TO ROM");
-    #endif
-    
 
-    bootConfig->current_rom = bootConfig->program_rom;
-    bootConfig->config_rom = flashSlot; 
-    bootConfig->update_rom = flashSlot+2; 
-    writeBootConfig();
+    //verify image here?
+    if(check_image(flashSlot) == true && check_image(flashSlot+2) == true)
+    {
+
+
+      #ifdef DEBUG_SETUP
+        Serial.println("UPDATE OK - BOOT TO ROM");
+      #endif
+
+
+      bootConfig->current_rom = bootConfig->program_rom;
+      bootConfig->config_rom = flashSlot; 
+      bootConfig->update_rom = flashSlot+2; 
+      writeBootConfig();
+    }
+    else{
+
+      #ifdef DEBUG_SETUP
+        Serial.println("CORRUPT IMAGE");
+      #endif
+
+    }
       
   }
   else{
