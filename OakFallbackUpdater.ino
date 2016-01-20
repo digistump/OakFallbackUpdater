@@ -1,14 +1,123 @@
-SYSTEM_MODE(MANUAL) //we dont want to connect to particle at all in this
+#ifdef __cplusplus
+extern "C" {
+#endif
+  #include <c_types.h>
+  #include <user_interface.h>
+  #include <mem.h>
+  #include <osapi.h>
+  #include "oakboot.h"
+#ifdef __cplusplus
+}
+#endif
+
+
 #include <Ticker.h>
+#include "ESP8266WiFi.h"
 
 //#define DEBUG_SETUP
+
+
+
+
+
+#ifndef MAX_ROM_SIZE //this becomes variable in the new scheme
+  #define MAX_ROM_SIZE (0x100000-0x2000)
+#endif
+
+#define SECTOR_SIZE 0x1000
+#define DEVICE_CONFIG_SECTOR 256
+#define DEVICE_BACKUP_CONFIG_SECTOR 512
+#define DEVICE_CHKSUM_INIT 0xee
+#define DEVICE_MAGIC 0xf0
+
+#define BOOT_CONFIG_SIZE 92
+#define DEVICE_CONFIG_SIZE 3398
+
+typedef struct {
+  //can cut off here if needed
+  char device_id[25];     //device id in hex
+  char claim_code[65];   // server public key
+  uint8 claimed;   // server public key
+  uint8 device_private_key[1216];  // device private key
+  uint8 device_public_key[384];   // device public key
+  uint8 server_public_key[768]; //also contains the server address at offset 384
+  uint8 server_address_type;   //domain or ip of cloud server
+  uint8 server_address_length;   //domain or ip of cloud server
+  char server_address_domain[254];   //domain or ip of cloud server
+  uint8 padding;
+  uint32 server_address_ip;   //[4]//domain or ip of cloud server
+  unsigned short firmware_version;  
+  unsigned short system_version;     //
+  char version_string[33];    //
+  uint8 reserved_flags[32];    //
+  uint8 reserved1[32];
+  uint8 product_store[24];    
+  char ssid[33]; //ssid and terminator
+  char passcode[65]; //passcode and terminator
+  uint8 channel; //channel number
+  int32 third_party_id;    //
+  char third_party_data[256];     //
+  char first_update_domain[65];
+  char first_update_url[65];
+  char first_update_fingerprint[60];
+  uint8 current_rom_scheme[1];
+  uint8 padding2[1];
+  uint8 magic;
+  uint8 chksum; 
+  //uint8 reserved2[698]; 
+} oak_config; 
+
+char device_id[25];
+char first_update_domain[65];
+char first_update_url[65];
+char first_update_fingerprint[60];
+  char ssid[33]; //ssid and terminator
+  char passcode[65]; //passcode and terminator
+  uint8 channel; 
+
+bool getDeviceInfo(){
+  uint8 config_buffer[DEVICE_CONFIG_SIZE];
+  oak_config *deviceConfig = (oak_config*)config_buffer;
+  noInterrupts();
+
+
+  spi_flash_read(DEVICE_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(config_buffer), DEVICE_CONFIG_SIZE);
+
+  if(deviceConfig->magic != DEVICE_MAGIC || deviceConfig->chksum != calc_device_chksum((uint8*)deviceConfig, (uint8*)&deviceConfig->chksum)){
+    //load the backup and copy to main
+    spi_flash_read(DEVICE_BACKUP_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(config_buffer), DEVICE_CONFIG_SIZE);
+    spi_flash_erase_sector(DEVICE_CONFIG_SECTOR);
+    spi_flash_write(DEVICE_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(config_buffer), DEVICE_CONFIG_SIZE);
+  }
+  interrupts();
+
+  if(deviceConfig->magic != DEVICE_MAGIC || deviceConfig->chksum != calc_device_chksum((uint8*)deviceConfig, (uint8*)&deviceConfig->chksum)){
+    return false;
+  }
+
+
+  memcpy(device_id,deviceConfig->device_id,25);
+  memcpy(first_update_domain,deviceConfig->first_update_domain,65);
+  memcpy(first_update_url,deviceConfig->first_update_url,65);
+  memcpy(first_update_fingerprint,deviceConfig->first_update_fingerprint,60);
+  memcpy(ssid,deviceConfig->ssid,33);
+  memcpy(passcode,deviceConfig->passcode,65);
+  channel = deviceConfig->channel;
+  return true;
+}
+
+uint8 boot_buffer[BOOT_CONFIG_SIZE];
+rboot_config *bootConfig = (rboot_config*)boot_buffer;
+
+ 
+
 
 Ticker LEDFlip;
 
 uint8_t LEDState = 0;
 void FlipLED(){
    LEDState = !LEDState;
-   digitalWrite(0, LEDState);
+   digitalWrite(5, LEDState);
 }
 
 
@@ -20,17 +129,35 @@ void initVariant() {
     interrupts();
 }
 
-TODO TRY TO CONNECT TO WIFI, IF NOT REBOOT TO CONFIG
+  #ifdef DEBUG_SETUP
+Ticker FreeHeap;
+void ShowFreeHeap(){
+      Serial.println(ESP.getFreeHeap());
+      }
+    #endif
+
 
 
 
 void setup(){
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
-  Serial.begin(115200);
-  pinMode(0,OUTPUT);
+Serial.begin(115200);
+pinMode(5,OUTPUT);
   LEDFlip.attach(0.5, FlipLED);
+  #ifdef DEBUG_SETUP
+      Serial.println("START");
+      FreeHeap.attach(5, ShowFreeHeap);
+    #endif
   readBootConfig();
+
+  //set these before we start so we'll jump back to config on failure
+  bootConfig->current_rom = 0;
+  bootConfig->config_rom = 0; 
+  bootConfig->update_rom = 0;
+  bootConfig->program_rom = 0;
+
+  writeBootConfig();
 
   if(!getDeviceInfo()){
     //switch to rom 0
@@ -38,25 +165,47 @@ void setup(){
   }  
 
   if(first_update_domain[0] == '\0' || first_update_url[0] == '\0' || first_update_fingerprint[0] == '\0'){
-    Oak.rebootToConfig();
+    ESP.restart();
   }
 
   #ifdef DEBUG_SETUP
       Serial.println("WIFI");
-  #endif
+    #endif
 
   
-  if(!Oak.connect()){//wifiConnect()
-    Oak.rebootToConfig();
+  if(passcode[0] != '\0' && channel > 0){
+    WiFi.begin(ssid,passcode, channel);
   }
-
-  if(!Oak.waitForConnected()){
-    Oak.rebootToConfig();
+  else if(passcode[0] != '\0'){
+    WiFi.begin(ssid,passcode);
+  }
+  else if(channel > 0){
+    WiFi.begin(ssid, NULL, channel);
+  }
+  else if(ssid[0] != '\0'){
+    WiFi.begin(ssid);
+  }
+  else{
+    ESP.restart();
   }
 
   #ifdef DEBUG_SETUP
-    Serial.println("GO TO UPDATE");
-  #endif
+      Serial.println("WIFI CONNECT");
+    #endif
+  //wait for connect
+  uint32_t timeoutTime = millis() + 15000;
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    yield();
+    //timeout after 15 seconds and return to main config loop - config on app will fail
+    if(millis() > timeoutTime){
+        ESP.restart();
+      }
+      delay(100);
+  }
+  #ifdef DEBUG_SETUP
+      Serial.println("GO TO UPDATE");
+    #endif
   doFactoryUpdate();//never returns
 
 }
@@ -66,30 +215,45 @@ void loop(){
 
 }
 
+static uint8 calc_device_chksum(uint8 *start, uint8 *end) {
+  uint8 chksum = DEVICE_CHKSUM_INIT;
+  while(start < end) {
+    chksum ^= *start;
+    start++;
+  }
+  return chksum;
+}
 
+
+static uint8 calc_chksum(uint8 *start, uint8 *end) {
+  uint8 chksum = CHKSUM_INIT;
+  while(start < end) {
+    chksum ^= *start;
+    start++;
+  }
+  return chksum;
+}
 
 void doFactoryUpdate(){
 
-  #ifdef DEBUG_SETUP
-    Serial.println("START UPDATE");
-  #endif
+      #ifdef DEBUG_SETUP
+      Serial.println("START UPDATE");
+    #endif
 
   LEDFlip.attach(0.1, FlipLED);
   if(doOTAUpdate(first_update_domain,443,first_update_url,first_update_fingerprint,8)){
 
-  TODO ADD CHECK IMAGE FROM OakClass
-
-  #ifdef DEBUG_SETUP
-    Serial.println("UPDATE OK - BOOT TO ROM");
-  #endif
+    #ifdef DEBUG_SETUP
+      Serial.println("UPDATE OK - BOOT TO ROM");
+    #endif
     
-  TODO FIX THIS ALL
-  bootConfig->current_rom = 8;
-  bootConfig->config_rom = 0; //IMPORTANT TODO ON FINAL we're going to set this as factory - so that we come back here if the other one fails, but the first thing the other should do is set itself to factory and set user_rom to 1
-  bootConfig->update_rom = 0; //IMPORTANT TODO ON FINAL we're going to set this as factory - so that we come back here if the other one fails, but the first thing the other should do is set itself to factory and set user_rom to 1
-  bootConfig->program_rom = 8;
-    //firmware_version = 1; do this on first boot of new firmware
-  writeBootConfig();
+
+    bootConfig->current_rom = 8;
+    bootConfig->config_rom = 0; //IMPORTANT TODO ON FINAL we're going to set this as factory - so that we come back here if the other one fails, but the first thing the other should do is set itself to factory and set user_rom to 1
+    bootConfig->update_rom = 0; //IMPORTANT TODO ON FINAL we're going to set this as factory - so that we come back here if the other one fails, but the first thing the other should do is set itself to factory and set user_rom to 1
+    bootConfig->program_rom = 8;
+      //firmware_version = 1; do this on first boot of new firmware
+    writeBootConfig();
       
   }
   else{
@@ -348,3 +512,39 @@ bool doOTAUpdate(const char * host, uint16_t port, const char * url, const char 
 
 
 }
+
+bool readBootConfig(){
+noInterrupts();
+  spi_flash_read(BOOT_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(boot_buffer), BOOT_CONFIG_SIZE);
+
+  if(bootConfig->magic != BOOT_CONFIG_MAGIC || bootConfig->chksum != calc_chksum((uint8*)bootConfig, (uint8*)&bootConfig->chksum)){
+
+    //load the backup and copy to main
+    spi_flash_read(BOOT_BACKUP_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(boot_buffer), BOOT_CONFIG_SIZE);
+    spi_flash_erase_sector(BOOT_CONFIG_SECTOR);
+    spi_flash_write(BOOT_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(boot_buffer), BOOT_CONFIG_SIZE);
+
+  }
+  interrupts();
+
+  if(bootConfig->magic != BOOT_CONFIG_MAGIC || bootConfig->chksum != calc_chksum((uint8*)bootConfig, (uint8*)&bootConfig->chksum)){
+    return false;
+  }
+
+  return true;
+}
+
+
+
+
+void writeBootConfig(){
+  noInterrupts();
+    bootConfig->chksum = calc_chksum((uint8*)bootConfig,(uint8*)&bootConfig->chksum);
+    spi_flash_erase_sector(BOOT_CONFIG_SECTOR);
+    spi_flash_write(BOOT_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(boot_buffer), BOOT_CONFIG_SIZE);
+    spi_flash_erase_sector(BOOT_BACKUP_CONFIG_SECTOR);
+    spi_flash_write(BOOT_BACKUP_CONFIG_SECTOR * SECTOR_SIZE, reinterpret_cast<uint32_t*>(boot_buffer), BOOT_CONFIG_SIZE);
+    interrupts();
+    
+  }
+
