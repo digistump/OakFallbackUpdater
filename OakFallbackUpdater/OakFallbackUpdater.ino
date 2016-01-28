@@ -188,6 +188,7 @@ pinMode(5,OUTPUT);
       Serial.println("WIFI CONNECT");
     #endif
   //wait for connect
+  delay(100);
   uint32_t timeoutTime = millis() + 15000;
   while (WiFi.status() != WL_CONNECTED)
   {
@@ -489,7 +490,11 @@ bool doOTAUpdate(const char * host, uint16_t port, const char * url, const char 
     // configure time
   configTime(3 * 3600, 0, "pool.ntp.org");
   
-  if(!ota_client.connect(host,port)){
+  uint8_t max_connect_tries = 5;
+  while(!ota_client.connect(host,port) && max_connect_tries>0){
+    max_connect_tries--;
+  }
+  if(max_connect_tries <= 0){
     #ifdef DEBUG_SETUP
       Serial.println("COULD NOT CONNECT");
       Serial.println(ESP.getFreeHeap());
@@ -497,6 +502,7 @@ bool doOTAUpdate(const char * host, uint16_t port, const char * url, const char 
       
       return false;
     }
+    
     #ifdef DEBUG_SETUP
   Serial.println("verify");
   #endif
