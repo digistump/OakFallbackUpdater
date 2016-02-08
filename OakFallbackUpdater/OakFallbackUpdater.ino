@@ -18,7 +18,7 @@ extern "C" {
 
 
 const char * update_domain = "oakota.digistump.com";
-const char * update_url = "/firmware/latest.bin";
+const char * update_url = "/firmware/firmware_v1.bin";
 const char * update_fingerprint = "98 66 d5 5c 3d 4a 49 24 e3 1b 72 8b 8f 2e 65 2e 32 2a 7b 95";
 
 #ifndef MAX_ROM_SIZE //this becomes variable in the new scheme
@@ -120,13 +120,13 @@ void FlipLEDFast(){
    LEDState = !LEDState;
    digitalWrite(5, LEDState);
 }
-
+uint8_t LED_count = 0;
 void FlipLED(){
    LEDState = !LEDState;
    digitalWrite(5, LEDState);
    if(LED_count == 0){
     LEDFlip.detach();
-    LEDFlip.attach(0.1,FlipLED)
+    LEDFlip.attach(0.1,FlipLED);
    }
    else if(LED_count == 5){
     LEDFlip.detach();
