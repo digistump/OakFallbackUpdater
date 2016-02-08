@@ -116,10 +116,27 @@ oakboot_config *bootConfig = (oakboot_config*)boot_buffer;
 Ticker LEDFlip;
 
 uint8_t LEDState = 0;
-void FlipLED(){
+void FlipLEDFast(){
    LEDState = !LEDState;
    digitalWrite(5, LEDState);
 }
+
+void FlipLED(){
+   LEDState = !LEDState;
+   digitalWrite(5, LEDState);
+   if(LED_count == 0){
+    LEDFlip.detach();
+    LEDFlip.attach(0.1,FlipLED)
+   }
+   else if(LED_count == 5){
+    LEDFlip.detach();
+    LEDFlip.attach(0.5,FlipLED);
+    LED_count = 0;
+    return;
+   }
+   LED_count++;
+}
+
 
 
 void initVariant() {
@@ -405,7 +422,8 @@ void doFactoryUpdate(){
       Serial.println("START UPDATE");
     #endif
 
-  LEDFlip.attach(0.1, FlipLED);
+  LEDFlip.detach();
+  LEDFlip.attach(0.1, FlipLEDFast);
   uint8_t flashSlot = getOTAFlashSlot();
   if(doOTAUpdate(update_domain,443,update_url,update_fingerprint,flashSlot)){
 
